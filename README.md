@@ -9,6 +9,13 @@
 - 输出解析容错：格式不匹配时回灌提示让模型重试，不会让程序崩溃
 - Streamlit 聊天界面：思考过程折叠展示，聊天历史保留
 
+
+
+## 页面展示
+
+<img width="1277" height="730" alt="屏幕截图 2026-11-26 130544" src="https://github.com/user-attachments/assets/23285b3b-28bc-44bf-b3af-16daa71db396" />
+
+
 ## 项目结构
 
 ```
