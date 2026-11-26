@@ -78,6 +78,7 @@ Python · Streamlit · OpenAI SDK（兼容 DeepSeek）· Tavily · wttr.in · py
 
 - 本次提交未包含 `.env`，请自行申请 Key。
 - 天气数据来自 wttr.in，景点 / 美食答案由 Tavily 检索后总结，仅供参考。
+- 建议使用 DeepSeek 所提供的 API 服务。
 
 ## License
 
