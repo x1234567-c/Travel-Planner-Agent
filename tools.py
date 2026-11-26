@@ -18,7 +18,7 @@ import requests
 from dotenv import load_dotenv
 from tavily import TavilyClient
 
-# 显式指定 .env 位置（本文件所在目录），这样无论从哪个目录启动 streamlit 都能读到。
+# 显式指定 .env 位置（本文件所在目录），这样从任何目录启动 streamlit 都能读到。
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 # ⚠️ 只在这里定义一次 Tavily Key（原文件里 get_attraction / get_food 各硬编码了一次）。
@@ -49,6 +49,30 @@ def _tavily():
     return _tavily_client
 
 
+def http_get(url: str, timeout: float = 8, **kwargs):
+    """GET 请求：系统代理挂了（ProxyError）就自动退回直连重试一次。"""
+    try:
+        return requests.get(url, timeout=timeout, **kwargs)
+    except requests.exceptions.ProxyError:
+        return requests.get(
+            url, timeout=timeout, proxies={"http": None, "https": None}, **kwargs
+        )
+
+
+def tavily_search(query: str, include_answer: bool = True, **kwargs) -> dict:
+    """
+    统一的 Tavily 搜索入口。
+    有些环境会设置系统代理但代理没启动，此时 requests 会抛 ProxyError；
+    这里捕获后退回直连重试一次，避免整个 Agent 因为代理状态而不可用。
+    """
+    client = _tavily()
+    try:
+        return client.search(query=query, include_answer=include_answer, **kwargs)
+    except requests.exceptions.ProxyError:
+        client.session.trust_env = False
+        return client.search(query=query, include_answer=include_answer, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # 工具 1：天气
 # ---------------------------------------------------------------------------
@@ -56,7 +80,7 @@ def get_weather(city: str) -> str:
     """查询指定城市的实时天气。"""
     url = f"https://wttr.in/{city}?format=j1"
     try:
-        response = requests.get(url, timeout=WEATHER_TIMEOUT)
+        response = http_get(url, timeout=WEATHER_TIMEOUT)
         response.raise_for_status()
         data = response.json()
         current = data["current_condition"][0]
@@ -73,7 +97,7 @@ def get_attraction(city: str, weather: str) -> str:
     """根据城市和天气，搜索合适的旅游景点。"""
     query = f"{city} 在 {weather} 天气下，最适合去哪些旅游景点？请推荐3个。"
     try:
-        response = _tavily().search(query=query, include_answer=True)
+        response = tavily_search(query=query, include_answer=True)
         return response.get("answer", "抱歉，没有找到相关的景点信息。")
     except Exception as e:
         return f"错误：执行Tavily搜索时失败 -> {e}"
@@ -86,7 +110,7 @@ def get_food(city: str) -> str:
     """查询指定城市的特色美食。"""
     query = f"{city} 有哪些必吃的特色美食？请推荐3个并简单说明。"
     try:
-        response = _tavily().search(query=query, include_answer=True)
+        response = tavily_search(query=query, include_answer=True)
         return response.get("answer", "抱歉，没有找到美食推荐。")
     except Exception as e:
         return f"错误：执行美食搜索时失败 -> {e}"

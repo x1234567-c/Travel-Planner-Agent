@@ -25,15 +25,17 @@ import os
 import re
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
 from openai import OpenAI
 
 from prompts import AGENT_SYSTEM_PROMPT
 from tools import available_tools
+from verify import verify_places
 
 # 与 tools.py 同理：先加载 .env，再读 Key。
 # 两个模块各加载一次是无害的（load_dotenv 幂等），好处是任何模块单独被 import 都自洽。
-# 显式指定路径，保证"从任何目录启动"都能读到与本文件同级的 .env。
+# 显式指定路径，保证"从任何目录启动"都能读到本文件同级的 .env。
 # 代码里不保留任何明文兜底 Key：读不到就直接报错，避免把密钥写进源码。
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
@@ -45,9 +47,54 @@ if not DEEPSEEK_API_KEY:
     )
 
 MODEL_NAME = "deepseek-chat"
-MAX_STEPS = 5
+# 多了一步"地点交叉验证"，步数上限从 5 提到 6：
+# 天气 → 景点 → 验证 → 结束，留一次容错
+MAX_STEPS = 6
 
 client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
+
+# 备用客户端：忽略系统代理。
+# 有些环境设置了系统代理但代理程序没启动，此时只走 client 会直接 ProxyError。
+_direct_client = OpenAI(
+    api_key=DEEPSEEK_API_KEY,
+    base_url="https://api.deepseek.com",
+    http_client=httpx.Client(trust_env=False),
+)
+
+
+def _is_proxy_error(exc: Exception) -> bool:
+    """判断是不是"连不上"类错误（含代理挂掉被包装成 Connection error 的情况）。"""
+    try:
+        from openai import APIConnectionError, APITimeoutError
+
+        if isinstance(exc, (APIConnectionError, APITimeoutError)):
+            return True
+    except ImportError:  # pragma: no cover
+        pass
+
+    cause: BaseException | None = exc
+    while cause is not None:
+        if isinstance(cause, httpx.ProxyError):
+            return True
+        cause = cause.__cause__
+
+    text = f"{type(exc).__name__} {exc}".lower()
+    return "proxy" in text or "127.0.0.1" in text
+
+
+def _chat(messages: list):
+    """调模型；遇到连接类错误（典型是系统代理没开）时退回直连重试一次。"""
+    kwargs = dict(model=MODEL_NAME, messages=messages, stop=["\nObservation:"])
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        if not _is_proxy_error(exc):
+            raise
+        return _direct_client.chat.completions.create(**kwargs)
+
+# verify_places 依赖 tools 的搜索封装（tools → verify 会成环），
+# 所以在核心层把它注册进同一张工具表；UI 层和提示词都不用感知差异。
+available_tools["verify_places"] = verify_places
 
 # ---------------------------------------------------------------------------
 # 正则：从模型输出里抠出 Action
@@ -134,14 +181,19 @@ def _parse_args(raw: str, func_name: str) -> dict:
     return {}
 
 
+def _normalize_text(text: str) -> str:
+    """模型偶尔把换行写成字面量 "\\n"（两个字符），这里还原成真正的换行。"""
+    return text.replace("\\r\\n", "\n").replace("\\n", "\n")
+
+
 def extract_finish(reply: str):
     """如果这一步是 Finish[...]，返回最终答案；否则返回 None。"""
     match = FINISH_RE.search(reply)
     if match:
-        return match.group(1).strip()
+        return _normalize_text(match.group(1).strip())
     # 兜底：模型写了 Finish 但没有方括号，就把整段当答案（保持原逻辑）
     if "Finish" in reply:
-        return reply.strip()
+        return _normalize_text(reply.strip())
     return None
 
 
@@ -198,11 +250,7 @@ def run_agent_streamlit(user_query: str):
     for _step in range(MAX_STEPS):
         # 1) 让模型思考 + 决定动作
         try:
-            response = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=messages,
-                stop=["\nObservation:"],
-            )
+            response = _chat(messages)
         except Exception as e:
             yield {"type": "error", "content": f"调用大模型失败：{e}"}
             yield {"type": "final", "content": "抱歉，调用大模型失败，请稍后重试。"}
