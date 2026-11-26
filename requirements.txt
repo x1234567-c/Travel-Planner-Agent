@@ -1,0 +1,9 @@
+# AI 旅行规划 Agent —— 依赖清单
+# 安装：pip install -r requirements.txt
+# 版本按开发环境实测锁定，保证换机器复现一致
+
+streamlit==1.67.0
+openai==3.46.0
+tavily-python==0.8.5
+python-dotenv==1.2.4
+requests==2.34.2
